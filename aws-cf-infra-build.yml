@@ -38,10 +38,54 @@ Parameters:
     Description: CIDR block for the private subnet
 
 Resources:
-  RandomString:
-    Type: 'AWS::CloudFormation::CustomResource'
+  RandomStringGeneratorFunction:
+    Type: 'AWS::Lambda::Function'
     Properties:
-      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:RandomStringGenerator'
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import random
+
+          def handler(event, context):
+              random_string = ''.join(random.choices('0123456789', k=3))
+              return {
+                  'Status': 'SUCCESS',
+                  'PhysicalResourceId': random_string,
+                  'Data': {
+                      'RandomString': random_string
+                  }
+              }
+      Runtime: python3.8
+      Timeout: 30
+
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaBasicExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  RandomString:
+    Type: 'Custom::RandomString'
+    Properties:
+      ServiceToken: !GetAtt RandomStringGeneratorFunction.Arn
 
   VPC:
     Type: 'AWS::EC2::VPC'
