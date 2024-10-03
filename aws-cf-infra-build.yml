@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudFormation template to create a VPC with public and private subnets, and an Internet Gateway.
+Description: CloudFormation template to create a VPC with public and private subnets, an Internet Gateway, and a NAT Gateway, all named with a prefix and a random 3-digit string.
 
 Parameters:
   Prefix:
@@ -38,28 +38,6 @@ Parameters:
     Description: CIDR block for the private subnet
 
 Resources:
-  RandomStringGeneratorFunction:
-    Type: 'AWS::Lambda::Function'
-    Properties:
-      Handler: index.handler
-      Role: !GetAtt LambdaExecutionRole.Arn
-      Code:
-        ZipFile: |
-          import json
-          import random
-
-          def handler(event, context):
-              random_string = ''.join(random.choices('0123456789', k=3))
-              return {
-                  'Status': 'SUCCESS',
-                  'PhysicalResourceId': random_string,
-                  'Data': {
-                      'RandomString': random_string
-                  }
-              }
-      Runtime: python3.8
-      Timeout: 30
-
   LambdaExecutionRole:
     Type: 'AWS::IAM::Role'
     Properties:
@@ -82,6 +60,30 @@ Resources:
                   - logs:PutLogEvents
                 Resource: '*'
 
+  RandomStringGeneratorFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import random
+          import string
+
+          def handler(event, context):
+              random_string = ''.join(random.choices(string.ascii_letters + string.digits, k=3))
+              response = {
+                  'Status': 'SUCCESS',
+                  'PhysicalResourceId': context.log_stream_name,
+                  'Data': {
+                      'RandomString': random_string
+                  }
+              }
+              return response
+      Runtime: python3.8
+      Timeout: 30
+
   RandomString:
     Type: 'Custom::RandomString'
     Properties:
@@ -95,25 +97,6 @@ Resources:
         - Key: Name
           Value: !Sub '${Prefix}-${VPCName}-${RandomString}'
 
-  PublicSubnet:
-    Type: 'AWS::EC2::Subnet'
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Ref PublicSubnetCidrBlock
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub '${Prefix}-${PublicSubnetName}-${RandomString}'
-
-  PrivateSubnet:
-    Type: 'AWS::EC2::Subnet'
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Ref PrivateSubnetCidrBlock
-      Tags:
-        - Key: Name
-          Value: !Sub '${Prefix}-${PrivateSubnetName}-${RandomString}'
-
   InternetGateway:
     Type: 'AWS::EC2::InternetGateway'
     Properties:
@@ -126,6 +109,27 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCidrBlock
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 0, !GetAZs 'ap-southeast-1' ]
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${PublicSubnetName}-${RandomString}'
+
+  PrivateSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetCidrBlock
+      AvailabilityZone: !Select [ 0, !GetAZs 'ap-southeast-1' ]
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${PrivateSubnetName}-${RandomString}'
 
   PublicRouteTable:
     Type: 'AWS::EC2::RouteTable'
@@ -148,6 +152,41 @@ Resources:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
+  EIP:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: vpc
+
+  NATGateway:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      AllocationId: !GetAtt EIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-nat-${RandomString}'
+
+  PrivateRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-private-rt-${RandomString}'
+
+  PrivateRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
 Outputs:
   VPCId:
     Description: VPC ID
@@ -164,3 +203,7 @@ Outputs:
   InternetGatewayId:
     Description: Internet Gateway ID
     Value: !Ref InternetGateway
+
+  NATGatewayId:
+    Description: NAT Gateway ID
+    Value: !Ref NATGateway
